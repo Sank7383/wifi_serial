@@ -32,8 +32,9 @@ static unsigned long g_rebootAt = 0;
 // ---------------------------------------------------------------------------
 // Wi-Fi setup
 // ---------------------------------------------------------------------------
+// Assumes the caller has already set the desired WiFi.mode() (AP, STA or
+// AP_STA) — this only brings the AP interface up within that mode.
 static void startAccessPoint() {
-  WiFi.mode(WIFI_AP);
   WiFi.softAP(cfg.apSsid, cfg.apPass);
   Serial.print(F("[wifi] AP started: "));
   Serial.print(cfg.apSsid);
@@ -41,8 +42,8 @@ static void startAccessPoint() {
   Serial.println(WiFi.softAPIP());
 }
 
+// Assumes the caller has already set the desired WiFi.mode().
 static bool connectStation() {
-  WiFi.mode(WIFI_STA);
   if (cfg.useStaticIp && strlen(cfg.ip) && strlen(cfg.gateway) && strlen(cfg.subnet)) {
     IPAddress ip, gw, sn, dns;
     ip.fromString(cfg.ip);
@@ -69,12 +70,21 @@ static bool connectStation() {
 }
 
 static void setupNetwork() {
-  if (cfg.wifiOpMode == WIFI_OPMODE_STA && strlen(cfg.staSsid) > 0) {
+  if (cfg.wifiOpMode == WIFI_OPMODE_AP_STA) {
+    WiFi.mode(WIFI_AP_STA);
+    startAccessPoint();
+    if (strlen(cfg.staSsid) > 0 && !connectStation()) {
+      Serial.println(F("[wifi] STA connect failed in AP+STA mode; AP interface remains reachable."));
+    }
+  } else if (cfg.wifiOpMode == WIFI_OPMODE_STA && strlen(cfg.staSsid) > 0) {
+    WiFi.mode(WIFI_STA);
     if (!connectStation()) {
       Serial.println(F("[wifi] STA connect failed, falling back to AP so the device stays reachable."));
+      WiFi.mode(WIFI_AP);
       startAccessPoint();
     }
   } else {
+    WiFi.mode(WIFI_AP);
     startAccessPoint();
   }
 }

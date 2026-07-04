@@ -17,6 +17,7 @@ void applyBaudRateLive(uint32_t baud);
 void requestReboot(uint32_t delayMs);
 
 inline bool requireAuth() {
+  if (cfg.authDisabled) return true; // explicitly opted into open access
   if (!server.authenticate(cfg.authUser, cfg.authPass)) {
     server.requestAuthentication(BASIC_AUTH, "ESP WiFi-Serial", "Sign in required");
     return false;
@@ -43,6 +44,7 @@ inline void handleGetConfig() {
   doc["dns"] = cfg.dns;
   doc["baudRate"] = cfg.baudRate;
   doc["authUser"] = cfg.authUser;
+  doc["authDisabled"] = cfg.authDisabled;
   doc["espnowEnabled"] = cfg.espnowEnabled;
   doc["espnowMode"] = cfg.espnowMode;
   doc["espnowPeerMac"] = cfg.espnowPeerMac;
@@ -78,7 +80,7 @@ inline void handlePostConfig() {
 
   // -- wifi mode --
   uint8_t wifiOpMode = doc["wifiOpMode"] | cfg.wifiOpMode;
-  if (wifiOpMode > 1) { server.send(400, "text/plain", "invalid wifiOpMode"); return; }
+  if (wifiOpMode > WIFI_OPMODE_AP_STA) { server.send(400, "text/plain", "invalid wifiOpMode"); return; }
   if (wifiOpMode != cfg.wifiOpMode) { wifiChanged = true; }
   cfg.wifiOpMode = wifiOpMode;
 
@@ -154,6 +156,7 @@ inline void handlePostConfig() {
     }
     strlcpy(cfg.authPass, p.c_str(), sizeof(cfg.authPass));
   }
+  cfg.authDisabled = doc["authDisabled"] | cfg.authDisabled;
 
   // -- ESP-NOW --
   bool espnowEnabled = doc["espnowEnabled"] | cfg.espnowEnabled;
@@ -197,14 +200,47 @@ inline void handlePostConfig() {
   if (wifiChanged) requestReboot(800);
 }
 
+// Lightweight endpoint for the Serial Monitor tab: changes the baud rate
+// immediately without touching the rest of the config payload, so it can't
+// accidentally clobber concurrent edits made on other tabs.
+inline void handlePostBaud() {
+  if (!requireAuth()) return;
+  if (!server.hasArg("plain")) { server.send(400, "text/plain", "missing body"); return; }
+
+  JsonDocument doc;
+  if (deserializeJson(doc, server.arg("plain")) != DeserializationError::Ok) {
+    server.send(400, "text/plain", "invalid json");
+    return;
+  }
+
+  uint32_t baud = doc["baudRate"] | 0UL;
+  if (!isValidBaud(baud)) { server.send(400, "text/plain", "invalid baud rate"); return; }
+
+  cfg.baudRate = baud;
+  if (!saveConfig()) {
+    server.send(500, "text/plain", "failed to persist config");
+    return;
+  }
+  applyBaudRateLive(cfg.baudRate);
+
+  JsonDocument resp;
+  resp["ok"] = true;
+  resp["baudRate"] = cfg.baudRate;
+  String out;
+  serializeJson(resp, out);
+  server.send(200, "application/json", out);
+}
+
 inline void handleGetStatus() {
   if (!requireAuth()) return;
   JsonDocument doc;
   doc["fwVersion"] = FW_VERSION;
-  doc["mode"] = cfg.wifiOpMode == WIFI_OPMODE_AP ? "AP" : "STA";
+  doc["mode"] = cfg.wifiOpMode == WIFI_OPMODE_AP ? "AP" :
+                (cfg.wifiOpMode == WIFI_OPMODE_AP_STA ? "AP+STA" : "STA");
   doc["ip"] = cfg.wifiOpMode == WIFI_OPMODE_AP ? WiFi.softAPIP().toString() : WiFi.localIP().toString();
+  if (cfg.wifiOpMode == WIFI_OPMODE_AP_STA) doc["apIp"] = WiFi.softAPIP().toString();
   doc["mac"] = WiFi.macAddress();
-  doc["rssi"] = cfg.wifiOpMode == WIFI_OPMODE_STA ? WiFi.RSSI() : 0;
+  doc["rssi"] = cfg.wifiOpMode != WIFI_OPMODE_AP ? WiFi.RSSI() : 0;
   doc["freeHeap"] = ESP.getFreeHeap();
   doc["uptimeMs"] = millis();
   String out;
@@ -255,6 +291,7 @@ inline void webServerInit() {
   server.on("/", HTTP_GET, handleRoot);
   server.on("/api/config", HTTP_GET, handleGetConfig);
   server.on("/api/config", HTTP_POST, handlePostConfig);
+  server.on("/api/baud", HTTP_POST, handlePostBaud);
   server.on("/api/status", HTTP_GET, handleGetStatus);
   server.on("/api/scan", HTTP_GET, handleGetScan);
   server.on("/api/wstoken", HTTP_GET, handleGetWsToken);

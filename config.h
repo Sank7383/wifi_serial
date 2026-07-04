@@ -10,7 +10,7 @@
 #define CONFIG_MAX_BYTES   1536
 #define FW_VERSION         "1.0.0"
 
-enum WifiOpMode : uint8_t { WIFI_OPMODE_STA = 0, WIFI_OPMODE_AP = 1 };
+enum WifiOpMode : uint8_t { WIFI_OPMODE_STA = 0, WIFI_OPMODE_AP = 1, WIFI_OPMODE_AP_STA = 2 };
 enum EspNowMode : uint8_t { ESPNOW_MODE_BROADCAST = 0, ESPNOW_MODE_UNICAST = 1 };
 
 struct AppConfig {
@@ -34,6 +34,7 @@ struct AppConfig {
   // Admin auth (HTTP Basic + WebSocket)
   char authUser[24]       = "admin";
   char authPass[33]       = "";                 // generated at first boot if empty
+  bool authDisabled       = false;              // true => dashboard/API open to anyone on the network, no login
 
   // ESP-NOW
   bool espnowEnabled      = false;
@@ -124,6 +125,7 @@ inline bool loadConfig() {
   cfg.baudRate = doc["baudRate"] | 115200UL;
   strlcpy(cfg.authUser, doc["authUser"] | "admin", sizeof(cfg.authUser));
   strlcpy(cfg.authPass, doc["authPass"] | "", sizeof(cfg.authPass));
+  cfg.authDisabled = doc["authDisabled"] | false;
   cfg.espnowEnabled = doc["espnowEnabled"] | false;
   cfg.espnowMode    = doc["espnowMode"]    | ESPNOW_MODE_BROADCAST;
   strlcpy(cfg.espnowPeerMac, doc["espnowPeerMac"] | "", sizeof(cfg.espnowPeerMac));
@@ -153,6 +155,7 @@ inline bool saveConfig() {
   doc["baudRate"]       = cfg.baudRate;
   doc["authUser"]       = cfg.authUser;
   doc["authPass"]       = cfg.authPass;
+  doc["authDisabled"]   = cfg.authDisabled;
   doc["espnowEnabled"]  = cfg.espnowEnabled;
   doc["espnowMode"]     = cfg.espnowMode;
   doc["espnowPeerMac"]  = cfg.espnowPeerMac;

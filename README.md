@@ -99,7 +99,9 @@ Admin password: <random>
    tab, switch to Station mode and join your normal network if desired.
 
 If a configured Station connection fails at boot, the device automatically
-falls back to AP mode so it's never left unreachable.
+falls back to AP mode so it's never left unreachable. A third **Both (AP +
+Station)** mode keeps the device's own AP reachable at all times while it
+also joins your router, for setups that want a guaranteed fallback path.
 
 ## ESP-NOW notes
 
@@ -124,6 +126,12 @@ falls back to AP mode so it's never left unreachable.
   plain HTTP/WS (no TLS — ESP8266 resources make TLS on both HTTP and WS
   simultaneously impractical). Don't expose it directly to the public
   internet/port-forward without a reverse proxy that terminates TLS.
+- The Admin tab has a "Disable password protection" toggle that removes
+  HTTP Basic Auth entirely, for lab/bench setups where re-entering
+  credentials is more friction than it's worth. It defaults to off and the
+  UI requires a confirmation before turning it on. When enabled, anyone who
+  can reach the device's IP has full read/write access — never enable it on
+  a shared or untrusted network.
 
 ## Possible future extensions
 

@@ -83,6 +83,13 @@ const char INDEX_HTML[] PROGMEM = R"HTMLPAGE(
           <option value="\r\n">CRLF (\r\n)</option>
           <option value="\r">CR (\r)</option>
         </select>
+        <select id="monitorBaud" title="Serial baud rate">
+          <option>300</option><option>1200</option><option>2400</option><option>4800</option>
+          <option>9600</option><option>19200</option><option>38400</option><option>57600</option>
+          <option>74880</option><option selected>115200</option><option>230400</option>
+          <option>460800</option><option>921600</option><option>1000000</option>
+          <option>1500000</option><option>2000000</option><option>3000000</option>
+        </select>
         <label class="check"><input type="checkbox" id="hexView"> Hex view</label>
         <label class="check"><input type="checkbox" id="autoscroll" checked> Autoscroll</label>
         <button class="btn secondary" id="clearBtn">Clear</button>
@@ -100,7 +107,9 @@ const char INDEX_HTML[] PROGMEM = R"HTMLPAGE(
       <div class="row">
         <label class="check"><input type="radio" name="wifiOpMode" value="0"> Station (connect to a router)</label>
         <label class="check"><input type="radio" name="wifiOpMode" value="1"> Access Point (device creates its own network)</label>
+        <label class="check"><input type="radio" name="wifiOpMode" value="2"> Both (AP + Station simultaneously)</label>
       </div>
+      <p class="muted">"Both" keeps the device's own AP reachable while it also joins your router — handy if a STA connection might drop and you still need a fallback path in.</p>
     </div>
     <div class="card">
       <h2>Station (STA) Settings</h2>
@@ -182,7 +191,8 @@ const char INDEX_HTML[] PROGMEM = R"HTMLPAGE(
             <option>300</option><option>1200</option><option>2400</option><option>4800</option>
             <option>9600</option><option>19200</option><option>38400</option><option>57600</option>
             <option>74880</option><option selected>115200</option><option>230400</option>
-            <option>460800</option><option>921600</option>
+            <option>460800</option><option>921600</option><option>1000000</option>
+            <option>1500000</option><option>2000000</option><option>3000000</option>
           </select>
         </div>
       </div>
@@ -195,6 +205,8 @@ const char INDEX_HTML[] PROGMEM = R"HTMLPAGE(
         <div class="field"><label>Username</label><input type="text" id="authUser" maxlength="23"></div>
         <div class="field"><label>New password (leave blank to keep current)</label><input type="password" id="authPass" maxlength="32"></div>
       </div>
+      <label class="check"><input type="checkbox" id="authDisabled"> Disable password protection (open access — anyone on the network can view and control this device)</label>
+      <p class="muted" style="color:var(--err)">Only enable this on a network you fully trust. With it on, the dashboard, serial monitor and all settings are reachable by anyone who can reach the device's IP — no login required.</p>
       <button class="btn" id="saveAuthBtn">Update credentials</button>
     </div>
     <div class="card">
@@ -271,7 +283,9 @@ async function loadConfig() {
 
   $('deviceName').value = cfg.deviceName || '';
   $('baudRate').value = cfg.baudRate || 115200;
+  $('monitorBaud').value = cfg.baudRate || 115200;
   $('authUser').value = cfg.authUser || 'admin';
+  $('authDisabled').checked = !!cfg.authDisabled;
 }
 
 async function saveConfig(patch) {
@@ -331,10 +345,18 @@ $('saveDeviceBtn').addEventListener('click', async () => {
 });
 
 $('saveAuthBtn').addEventListener('click', async () => {
-  const patch = { authUser: $('authUser').value.trim() || 'admin' };
+  const disabling = $('authDisabled').checked;
+  if (disabling && !confirm('This makes the dashboard and serial monitor open to anyone on the network, with no login. Continue?')) {
+    $('authDisabled').checked = false;
+    return;
+  }
+  const patch = {
+    authUser: $('authUser').value.trim() || 'admin',
+    authDisabled: disabling,
+  };
   if ($('authPass').value) patch.authPass = $('authPass').value;
   const ok = await saveConfig(patch);
-  if (ok) toast('Credentials updated — you may be asked to sign in again');
+  if (ok) toast(disabling ? 'Open access enabled — no login required' : 'Credentials updated — you may be asked to sign in again');
 });
 
 $('rebootBtn').addEventListener('click', async () => {
@@ -359,8 +381,9 @@ async function refreshStatus() {
   try {
     const res = await fetch('/api/status');
     const s = await res.json();
+    const ipLine = s.apIp ? `STA IP: ${s.ip} &nbsp;|&nbsp; AP IP: ${s.apIp}` : `IP: ${s.ip}`;
     $('statusBox').innerHTML = `
-      Firmware: ${s.fwVersion} &nbsp;|&nbsp; Mode: ${s.mode} &nbsp;|&nbsp; IP: ${s.ip}<br>
+      Firmware: ${s.fwVersion} &nbsp;|&nbsp; Mode: ${s.mode} &nbsp;|&nbsp; ${ipLine}<br>
       Wi-Fi MAC: <code class="mac">${s.mac}</code> &nbsp;|&nbsp; RSSI: ${s.rssi} dBm<br>
       Free heap: ${s.freeHeap} bytes &nbsp;|&nbsp; Uptime: ${Math.floor(s.uptimeMs/1000)}s`;
   } catch (e) { /* ignore transient errors */ }
@@ -381,6 +404,25 @@ function bytesToHex(bytes) {
   return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join(' ') + ' ';
 }
 $('clearBtn').addEventListener('click', () => monitorEl.textContent = '');
+
+$('monitorBaud').addEventListener('change', async () => {
+  const baudRate = Number($('monitorBaud').value);
+  const prev = cfg.baudRate;
+  try {
+    const res = await fetch('/api/baud', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ baudRate })
+    });
+    if (!res.ok) { toast('Baud rate change failed: ' + (await res.text())); $('monitorBaud').value = prev; return; }
+    cfg.baudRate = baudRate;
+    $('baudRate').value = baudRate;
+    toast('Baud rate set to ' + baudRate);
+  } catch (e) {
+    toast('Baud rate change failed');
+    $('monitorBaud').value = prev;
+  }
+});
 
 let ws;
 async function connectWs() {

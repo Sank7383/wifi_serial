@@ -44,6 +44,7 @@ inline bool isValidBaud(uint32_t b) {
     case 300: case 1200: case 2400: case 4800: case 9600:
     case 19200: case 38400: case 57600: case 74880:
     case 115200: case 230400: case 460800: case 921600:
+    case 1000000: case 1500000: case 2000000: case 3000000:
       return true;
     default:
       return false;
