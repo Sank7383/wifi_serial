@@ -51,6 +51,18 @@ struct AppConfig {
   bool espnowToSerial     = true;   // ESP-NOW        -> UART TX
   bool espnowToWs         = true;   // ESP-NOW        -> WebSocket clients
 
+  // ESP Programmer: turns this unit into a dedicated WiFi<->UART bridge for
+  // flashing a third ESP with esptool (socket:// transport), instead of the
+  // normal serial monitor / ESP-NOW bridging. Two spare GPIOs on this unit
+  // are wired to the target's GPIO0/BOOT and EN/RST pins for auto-reset.
+  bool     programmerEnabled = false;
+  uint8_t  pgmGpio0Pin        = 14;    // wired to target GPIO0 / BOOT strap
+  uint8_t  pgmResetPin        = 12;    // wired to target EN / RST
+  bool     pgmGpio0ActiveLow  = true;  // most auto-reset transistor circuits invert the control signal
+  bool     pgmResetActiveLow  = true;
+  uint16_t pgmTcpPort         = 3333;  // esptool.py --port socket://<ip>:<port>
+  uint32_t pgmBaudRate        = 115200; // fixed for the whole session; must match esptool --baud
+
   bool provisioned        = false;  // false => first-boot, forces setup flow
 };
 
@@ -135,6 +147,13 @@ inline bool loadConfig() {
   cfg.serialToEspnow = doc["serialToEspnow"] | false;
   cfg.espnowToSerial = doc["espnowToSerial"] | true;
   cfg.espnowToWs     = doc["espnowToWs"]     | true;
+  cfg.programmerEnabled  = doc["programmerEnabled"]  | false;
+  cfg.pgmGpio0Pin        = doc["pgmGpio0Pin"]        | 14;
+  cfg.pgmResetPin        = doc["pgmResetPin"]        | 12;
+  cfg.pgmGpio0ActiveLow  = doc["pgmGpio0ActiveLow"]  | true;
+  cfg.pgmResetActiveLow  = doc["pgmResetActiveLow"]  | true;
+  cfg.pgmTcpPort         = doc["pgmTcpPort"]         | 3333;
+  cfg.pgmBaudRate        = doc["pgmBaudRate"]        | 115200UL;
   cfg.provisioned    = doc["provisioned"]    | false;
   return true;
 }
@@ -165,6 +184,13 @@ inline bool saveConfig() {
   doc["serialToEspnow"] = cfg.serialToEspnow;
   doc["espnowToSerial"] = cfg.espnowToSerial;
   doc["espnowToWs"]     = cfg.espnowToWs;
+  doc["programmerEnabled"] = cfg.programmerEnabled;
+  doc["pgmGpio0Pin"]       = cfg.pgmGpio0Pin;
+  doc["pgmResetPin"]       = cfg.pgmResetPin;
+  doc["pgmGpio0ActiveLow"] = cfg.pgmGpio0ActiveLow;
+  doc["pgmResetActiveLow"] = cfg.pgmResetActiveLow;
+  doc["pgmTcpPort"]        = cfg.pgmTcpPort;
+  doc["pgmBaudRate"]       = cfg.pgmBaudRate;
   doc["provisioned"]    = cfg.provisioned;
 
   File f = LittleFS.open(CONFIG_PATH, "w");

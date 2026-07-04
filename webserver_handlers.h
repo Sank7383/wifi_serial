@@ -9,6 +9,7 @@
 #include "webpage.h"
 #include "websocket_handler.h"
 #include "espnow_handler.h"
+#include "programmer_handler.h"
 
 ESP8266WebServer server(80);
 
@@ -54,6 +55,13 @@ inline void handleGetConfig() {
   doc["serialToEspnow"] = cfg.serialToEspnow;
   doc["espnowToSerial"] = cfg.espnowToSerial;
   doc["espnowToWs"] = cfg.espnowToWs;
+  doc["programmerEnabled"] = cfg.programmerEnabled;
+  doc["pgmGpio0Pin"] = cfg.pgmGpio0Pin;
+  doc["pgmResetPin"] = cfg.pgmResetPin;
+  doc["pgmGpio0ActiveLow"] = cfg.pgmGpio0ActiveLow;
+  doc["pgmResetActiveLow"] = cfg.pgmResetActiveLow;
+  doc["pgmTcpPort"] = cfg.pgmTcpPort;
+  doc["pgmBaudRate"] = cfg.pgmBaudRate;
   // Note: staPass / apPass / authPass are intentionally never returned.
   String out;
   serializeJson(doc, out);
@@ -179,6 +187,45 @@ inline void handlePostConfig() {
   cfg.serialToEspnow = doc["serialToEspnow"] | cfg.serialToEspnow;
   cfg.espnowToSerial = doc["espnowToSerial"] | cfg.espnowToSerial;
   cfg.espnowToWs     = doc["espnowToWs"]     | cfg.espnowToWs;
+
+  // -- ESP Programmer --
+  bool programmerEnabled   = doc["programmerEnabled"]   | cfg.programmerEnabled;
+  uint8_t pgmGpio0Pin       = doc["pgmGpio0Pin"]         | cfg.pgmGpio0Pin;
+  uint8_t pgmResetPin       = doc["pgmResetPin"]         | cfg.pgmResetPin;
+  bool pgmGpio0ActiveLow   = doc["pgmGpio0ActiveLow"]   | cfg.pgmGpio0ActiveLow;
+  bool pgmResetActiveLow   = doc["pgmResetActiveLow"]   | cfg.pgmResetActiveLow;
+  uint16_t pgmTcpPort       = doc["pgmTcpPort"]          | cfg.pgmTcpPort;
+  uint32_t pgmBaudRate      = doc["pgmBaudRate"]         | cfg.pgmBaudRate;
+
+  if (!isValidPgmPin(pgmGpio0Pin) || !isValidPgmPin(pgmResetPin)) {
+    server.send(400, "text/plain", "invalid programmer GPIO pin"); return;
+  }
+  if (pgmGpio0Pin == pgmResetPin) {
+    server.send(400, "text/plain", "programmer GPIO0 and reset pins must differ"); return;
+  }
+  if (!isValidPgmPort(pgmTcpPort)) {
+    server.send(400, "text/plain", "invalid programmer TCP port"); return;
+  }
+  if (!isValidBaud(pgmBaudRate)) {
+    server.send(400, "text/plain", "invalid programmer baud rate"); return;
+  }
+
+  bool pgmSettingsChanged = programmerEnabled  != cfg.programmerEnabled  ||
+                            pgmGpio0Pin        != cfg.pgmGpio0Pin        ||
+                            pgmResetPin        != cfg.pgmResetPin        ||
+                            pgmGpio0ActiveLow  != cfg.pgmGpio0ActiveLow  ||
+                            pgmResetActiveLow  != cfg.pgmResetActiveLow  ||
+                            pgmTcpPort         != cfg.pgmTcpPort         ||
+                            pgmBaudRate        != cfg.pgmBaudRate;
+
+  cfg.programmerEnabled  = programmerEnabled;
+  cfg.pgmGpio0Pin         = pgmGpio0Pin;
+  cfg.pgmResetPin         = pgmResetPin;
+  cfg.pgmGpio0ActiveLow   = pgmGpio0ActiveLow;
+  cfg.pgmResetActiveLow   = pgmResetActiveLow;
+  cfg.pgmTcpPort          = pgmTcpPort;
+  cfg.pgmBaudRate         = pgmBaudRate;
+
   cfg.provisioned = true;
 
   if (!saveConfig()) {
@@ -187,8 +234,9 @@ inline void handlePostConfig() {
   }
 
   // Apply what can be applied live, without a reboot.
-  if (baudChanged) applyBaudRateLive(cfg.baudRate);
+  if (baudChanged && !cfg.programmerEnabled) applyBaudRateLive(cfg.baudRate);
   if (cfg.espnowEnabled) espnowApplyPeer(); else espnowDeinit();
+  if (pgmSettingsChanged) pgmApplySettings();
 
   JsonDocument resp;
   resp["ok"] = true;
@@ -210,6 +258,11 @@ inline void handlePostBaud() {
   JsonDocument doc;
   if (deserializeJson(doc, server.arg("plain")) != DeserializationError::Ok) {
     server.send(400, "text/plain", "invalid json");
+    return;
+  }
+
+  if (cfg.programmerEnabled) {
+    server.send(409, "text/plain", "device is in Programmer mode; the UART baud is fixed to pgmBaudRate");
     return;
   }
 
@@ -243,9 +296,36 @@ inline void handleGetStatus() {
   doc["rssi"] = cfg.wifiOpMode != WIFI_OPMODE_AP ? WiFi.RSSI() : 0;
   doc["freeHeap"] = ESP.getFreeHeap();
   doc["uptimeMs"] = millis();
+  doc["pgmEnabled"] = cfg.programmerEnabled;
+  doc["pgmClientConnected"] = pgmClientConnected();
   String out;
   serializeJson(doc, out);
   server.send(200, "application/json", out);
+}
+
+// Manual bootloader/run-mode trigger for the Programmer tab, so wiring can
+// be verified (e.g. watch the target's LED) without needing esptool.
+inline void handlePostPgmTest() {
+  if (!requireAuth()) return;
+  if (!cfg.programmerEnabled) { server.send(409, "text/plain", "Programmer mode is not enabled"); return; }
+  if (pgmClientConnected()) { server.send(409, "text/plain", "a flashing session is already active"); return; }
+  if (!server.hasArg("plain")) { server.send(400, "text/plain", "missing body"); return; }
+
+  JsonDocument doc;
+  if (deserializeJson(doc, server.arg("plain")) != DeserializationError::Ok) {
+    server.send(400, "text/plain", "invalid json");
+    return;
+  }
+  const char *mode = doc["mode"] | "";
+  if (strcmp(mode, "bootloader") == 0) {
+    pgmEnterBootloader();
+  } else if (strcmp(mode, "run") == 0) {
+    pgmEnterRunMode();
+  } else {
+    server.send(400, "text/plain", "mode must be \"bootloader\" or \"run\"");
+    return;
+  }
+  server.send(200, "application/json", "{\"ok\":true}");
 }
 
 inline void handleGetScan() {
@@ -292,6 +372,7 @@ inline void webServerInit() {
   server.on("/api/config", HTTP_GET, handleGetConfig);
   server.on("/api/config", HTTP_POST, handlePostConfig);
   server.on("/api/baud", HTTP_POST, handlePostBaud);
+  server.on("/api/pgm/test", HTTP_POST, handlePostPgmTest);
   server.on("/api/status", HTTP_GET, handleGetStatus);
   server.on("/api/scan", HTTP_GET, handleGetScan);
   server.on("/api/wstoken", HTTP_GET, handleGetWsToken);

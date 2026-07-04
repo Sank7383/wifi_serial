@@ -51,6 +51,23 @@ inline bool isValidBaud(uint32_t b) {
   }
 }
 
+// GPIO0/EN control lines for the ESP Programmer feature are limited to pins
+// that are free on a typical ESP8266 module: not the UART pins (1, 3 — used
+// by hardware Serial for the target link) and not the flash-SPI pins (6-11).
+inline bool isValidPgmPin(uint8_t p) {
+  switch (p) {
+    case 0: case 2: case 4: case 5:
+    case 12: case 13: case 14: case 15: case 16:
+      return true;
+    default:
+      return false;
+  }
+}
+
+inline bool isValidPgmPort(uint16_t p) {
+  return p != 0 && p != 80 && p != 81; // avoid clashing with the HTTP/WS servers
+}
+
 // ---- Base64 (small, dependency-free) -----------------------------------
 inline size_t base64EncodedLen(size_t inLen) { return ((inLen + 2) / 3) * 4; }
 

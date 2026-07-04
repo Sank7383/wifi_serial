@@ -115,6 +115,56 @@ also joins your router, for setups that want a guaranteed fallback path.
   channel. When it's in AP mode (or the peer is AP-only), set the
   **ESP-NOW channel** field in the dashboard to match the peer's channel.
 
+## ESP Programmer (flash a third ESP over WiFi)
+
+The **Programmer** tab turns one of these units into a dedicated WiFi-to-UART
+bridge so `esptool.py` on your PC can flash a *third*, separate ESP over
+WiFi instead of a USB cable — useful when the target is physically remote
+or you don't want a USB cable running to it.
+
+**Roles:**
+- Unit A (your PC): runs `esptool.py`, unmodified, no special driver.
+- Unit B (a wifi_serial device): the "bridge"/"programmer" — wired to the
+  target's UART *and* two of its bootstrap pins.
+- Unit C (the target ESP being flashed): just needs UART + GPIO0/EN wired
+  out to headers, no firmware requirements of its own.
+
+**Wiring (Unit B -> Unit C):**
+- Bridge TX -> target RX, bridge RX -> target TX (crossed), plus a shared GND.
+- A spare bridge GPIO -> target GPIO0/BOOT (pulled low to select the ROM
+  bootloader on reset).
+- A second spare bridge GPIO -> target EN/RST (pulsed to reset the target).
+- Pick both pins in the Programmer tab; polarity (active-low vs active-high)
+  is configurable to match whatever auto-reset circuit (if any) sits between
+  the GPIOs and the target.
+
+**Usage:**
+1. On the bridge unit's **Programmer** tab, enable Programmer mode, set the
+   GPIO0/reset pins, TCP port and baud rate, then save. This disables the
+   normal Serial Monitor and ESP-NOW bridging on that unit — its UART is now
+   dedicated to the target.
+2. Use "Enter bootloader (test)" / "Return to run mode" to confirm the
+   wiring (e.g. watch the target's power/status LED behavior) before
+   involving esptool.
+3. On the PC, run the command shown in the **Flash Command** box — it
+   points esptool at the bridge's IP over a raw TCP socket instead of a
+   local COM port:
+   ```
+   esptool.py --port socket://<bridge-ip>:3333 --baud 115200 --before no_reset --after no_reset write_flash 0x0 firmware.bin
+   ```
+   The bridge auto-pulses the target into bootloader mode the instant
+   esptool connects, and back into run mode when esptool disconnects.
+
+**Limitations:**
+- One flashing session at a time; a second connection attempt is refused.
+- The baud rate is fixed for the whole session — this bridge doesn't
+  intercept/mirror esptool's mid-session baud-rate-upgrade command, so pick
+  a baud up front and don't rely on esptool's automatic speed upgrade.
+  115200 is the safest default; higher rates are best-effort and depend on
+  cable quality and WiFi latency.
+- Requires `pyserial`'s `socket://` URL support, which ships with esptool's
+  normal dependencies — no extra install needed on the PC side.
+
 ## Security notes
 
 - Every unit ships with unique, randomly generated AP and admin

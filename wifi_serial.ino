@@ -20,6 +20,7 @@
 #include "util.h"
 #include "espnow_handler.h"
 #include "websocket_handler.h"
+#include "programmer_handler.h"
 #include "webserver_handlers.h"
 
 AppConfig cfg;
@@ -112,11 +113,13 @@ static void setupMdns() {
 // Bridge glue — called from the WebSocket and ESP-NOW handlers.
 // ---------------------------------------------------------------------------
 void handleBridgeDataFromWs(const uint8_t *data, size_t len) {
+  if (cfg.programmerEnabled) return; // UART is exclusively reserved for the esptool bridge
   if (cfg.wsToSerial) Serial.write(data, len);
   if (cfg.serialToEspnow) espnowSend(data, len);
 }
 
 void handleEspNowRecv(const uint8_t *mac, const uint8_t *data, uint8_t len) {
+  if (cfg.programmerEnabled) return; // UART is exclusively reserved for the esptool bridge
   if (cfg.espnowToSerial) Serial.write(data, len);
   if (cfg.espnowToWs) wsSendEspNowFrame(mac, data, len);
 }
@@ -158,6 +161,7 @@ void setup() {
   espnowInit();
   webServerInit();
   wsInit();
+  pgmInit(); // may re-apply baud/pins if this unit boots directly into Programmer mode
 
   Serial.println(F("[boot] ESP WiFi-Serial bridge ready."));
 }
@@ -167,20 +171,26 @@ void loop() {
   webSocket.loop();
   MDNS.update();
 
-  // Buffer incoming UART bytes and flush as one bridge frame either when
-  // the buffer fills or the line goes quiet, instead of one frame/byte.
-  static uint8_t serialBuf[BRIDGE_CHUNK_MAX];
-  static size_t serialLen = 0;
-  static unsigned long lastByteMs = 0;
+  if (cfg.programmerEnabled) {
+    // Dedicated esptool <-> target UART bridge; the normal serial monitor
+    // and ESP-NOW bridging below are suspended so nothing else touches Serial.
+    pgmLoop();
+  } else {
+    // Buffer incoming UART bytes and flush as one bridge frame either when
+    // the buffer fills or the line goes quiet, instead of one frame/byte.
+    static uint8_t serialBuf[BRIDGE_CHUNK_MAX];
+    static size_t serialLen = 0;
+    static unsigned long lastByteMs = 0;
 
-  while (Serial.available() && serialLen < BRIDGE_CHUNK_MAX) {
-    serialBuf[serialLen++] = (uint8_t)Serial.read();
-    lastByteMs = millis();
-  }
-  if (serialLen > 0 && (serialLen >= BRIDGE_CHUNK_MAX || millis() - lastByteMs > SERIAL_BRIDGE_FLUSH_MS)) {
-    if (cfg.serialToWs) wsSendSerialFrame(serialBuf, serialLen);
-    if (cfg.serialToEspnow) espnowSend(serialBuf, serialLen);
-    serialLen = 0;
+    while (Serial.available() && serialLen < BRIDGE_CHUNK_MAX) {
+      serialBuf[serialLen++] = (uint8_t)Serial.read();
+      lastByteMs = millis();
+    }
+    if (serialLen > 0 && (serialLen >= BRIDGE_CHUNK_MAX || millis() - lastByteMs > SERIAL_BRIDGE_FLUSH_MS)) {
+      if (cfg.serialToWs) wsSendSerialFrame(serialBuf, serialLen);
+      if (cfg.serialToEspnow) espnowSend(serialBuf, serialLen);
+      serialLen = 0;
+    }
   }
 
   if (g_rebootPending && millis() >= g_rebootAt) {

@@ -68,6 +68,7 @@ const char INDEX_HTML[] PROGMEM = R"HTMLPAGE(
   <button data-tab="wifi">Wi-Fi</button>
   <button data-tab="espnow">ESP-NOW</button>
   <button data-tab="admin">Admin</button>
+  <button data-tab="programmer">Programmer</button>
 </nav>
 
 <main>
@@ -220,6 +221,58 @@ const char INDEX_HTML[] PROGMEM = R"HTMLPAGE(
     </div>
   </section>
 
+  <section id="tab-programmer" class="tab">
+    <div class="card">
+      <h2>ESP Programmer</h2>
+      <p class="muted">Turns this unit into a dedicated WiFi-to-UART bridge for flashing a <b>third</b> ESP with esptool.py, instead of the normal serial monitor. Wire this unit's UART to the target's UART (TX&rarr;RX, RX&rarr;TX, shared GND), and two spare GPIOs to the target's GPIO0/BOOT and EN/RST pins.</p>
+      <label class="check"><input type="checkbox" id="programmerEnabled"> Enable Programmer mode</label>
+      <p class="muted" style="color:var(--warn)">While enabled, the Serial Monitor and ESP-NOW bridging on this device are suspended — its UART is dedicated to the target ESP.</p>
+    </div>
+    <div class="card">
+      <h2>Pin Wiring</h2>
+      <div class="row">
+        <div class="field">
+          <label>GPIO0 / BOOT control pin</label>
+          <select id="pgmGpio0Pin"></select>
+        </div>
+        <div class="field">
+          <label>EN / RST control pin</label>
+          <select id="pgmResetPin"></select>
+        </div>
+      </div>
+      <label class="check"><input type="checkbox" id="pgmGpio0ActiveLow" checked> GPIO0 pin is active-low (drives LOW to select bootloader)</label>
+      <label class="check"><input type="checkbox" id="pgmResetActiveLow" checked> Reset pin is active-low (drives LOW to reset)</label>
+    </div>
+    <div class="card">
+      <h2>Network</h2>
+      <div class="row">
+        <div class="field"><label>TCP port for esptool</label><input type="number" id="pgmTcpPort" min="1" max="65535"></div>
+        <div class="field">
+          <label>Flashing baud rate (fixed for the session)</label>
+          <select id="pgmBaudRate">
+            <option>9600</option><option>19200</option><option>38400</option><option>57600</option>
+            <option selected>115200</option><option>230400</option><option>460800</option><option>921600</option>
+          </select>
+        </div>
+      </div>
+      <button class="btn" id="savePgmBtn">Save Programmer settings</button>
+    </div>
+    <div class="card">
+      <h2>Flash Command</h2>
+      <p class="muted">Run this on the PC where esptool is installed, instead of pointing it at a local COM port. The baud is fixed for the whole session — don't rely on esptool's automatic speed upgrade.</p>
+      <input type="text" id="pgmCommand" readonly style="font-family:Consolas,Menlo,monospace;margin-bottom:10px">
+      <button class="btn secondary" id="copyPgmCmdBtn">Copy command</button>
+    </div>
+    <div class="card">
+      <h2>Wiring Test</h2>
+      <div id="pgmStatus" class="muted">Programmer mode is off.</div>
+      <div class="toolbar">
+        <button class="btn secondary" id="pgmTestBootBtn">Enter bootloader (test)</button>
+        <button class="btn secondary" id="pgmTestRunBtn">Return to run mode</button>
+      </div>
+    </div>
+  </section>
+
 </main>
 
 <div class="toast" id="toast"></div>
@@ -287,6 +340,15 @@ async function loadConfig() {
   $('monitorBaud').value = cfg.baudRate || 115200;
   $('authUser').value = cfg.authUser || 'admin';
   $('authDisabled').checked = !!cfg.authDisabled;
+
+  $('programmerEnabled').checked = !!cfg.programmerEnabled;
+  $('pgmGpio0Pin').value = cfg.pgmGpio0Pin ?? 14;
+  $('pgmResetPin').value = cfg.pgmResetPin ?? 12;
+  $('pgmGpio0ActiveLow').checked = cfg.pgmGpio0ActiveLow !== false;
+  $('pgmResetActiveLow').checked = cfg.pgmResetActiveLow !== false;
+  $('pgmTcpPort').value = cfg.pgmTcpPort || 3333;
+  $('pgmBaudRate').value = cfg.pgmBaudRate || 115200;
+  updatePgmCommand();
 }
 
 async function saveConfig(patch) {
@@ -366,6 +428,69 @@ $('rebootBtn').addEventListener('click', async () => {
   toast('Rebooting…');
 });
 
+// ---------- ESP Programmer ----------
+const PGM_PINS = [
+  [0, 'GPIO0 (D3)'], [2, 'GPIO2 (D4)'], [4, 'GPIO4 (D2)'], [5, 'GPIO5 (D1)'],
+  [12, 'GPIO12 (D6)'], [13, 'GPIO13 (D7)'], [14, 'GPIO14 (D5)'], [15, 'GPIO15 (D8)'], [16, 'GPIO16 (D0)'],
+];
+for (const id of ['pgmGpio0Pin', 'pgmResetPin']) {
+  $(id).innerHTML = PGM_PINS.map(([v, label]) => `<option value="${v}">${label}</option>`).join('');
+}
+
+function updatePgmCommand() {
+  const port = $('pgmTcpPort').value || 3333;
+  const baud = $('pgmBaudRate').value || 115200;
+  $('pgmCommand').value =
+    `esptool.py --port socket://${location.hostname}:${port} --baud ${baud} --before no_reset --after no_reset write_flash 0x0 firmware.bin`;
+}
+$('pgmTcpPort').addEventListener('input', updatePgmCommand);
+$('pgmBaudRate').addEventListener('change', updatePgmCommand);
+
+$('savePgmBtn').addEventListener('click', async () => {
+  const enabling = $('programmerEnabled').checked;
+  const gpio0Pin = Number($('pgmGpio0Pin').value);
+  const resetPin = Number($('pgmResetPin').value);
+  if (gpio0Pin === resetPin) { toast('GPIO0 and Reset pins must be different'); return; }
+  if (enabling && !confirm('This suspends the Serial Monitor and ESP-NOW bridging on this device and dedicates its UART to flashing a target ESP. Continue?')) {
+    return;
+  }
+  await saveConfig({
+    programmerEnabled: enabling,
+    pgmGpio0Pin: gpio0Pin,
+    pgmResetPin: resetPin,
+    pgmGpio0ActiveLow: $('pgmGpio0ActiveLow').checked,
+    pgmResetActiveLow: $('pgmResetActiveLow').checked,
+    pgmTcpPort: Number($('pgmTcpPort').value) || 3333,
+    pgmBaudRate: Number($('pgmBaudRate').value) || 115200,
+  });
+  updatePgmCommand();
+});
+
+$('copyPgmCmdBtn').addEventListener('click', () => {
+  const el = $('pgmCommand');
+  el.removeAttribute('readonly');
+  el.select();
+  try {
+    document.execCommand('copy');
+    toast('Command copied');
+  } catch (e) {
+    toast('Copy failed — select the text manually');
+  }
+  el.setAttribute('readonly', 'readonly');
+});
+
+async function pgmTest(mode) {
+  const res = await fetch('/api/pgm/test', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mode })
+  });
+  if (!res.ok) { toast('Failed: ' + (await res.text())); return; }
+  toast(mode === 'bootloader' ? 'Target pulsed into bootloader mode' : 'Target pulsed into run mode');
+}
+$('pgmTestBootBtn').addEventListener('click', () => pgmTest('bootloader'));
+$('pgmTestRunBtn').addEventListener('click', () => pgmTest('run'));
+
 $('scanBtn').addEventListener('click', async () => {
   $('scanResults').textContent = 'Scanning…';
   const res = await fetch('/api/scan');
@@ -387,6 +512,9 @@ async function refreshStatus() {
       Firmware: ${s.fwVersion} &nbsp;|&nbsp; Mode: ${s.mode} &nbsp;|&nbsp; ${ipLine}<br>
       Wi-Fi MAC: <code class="mac">${s.mac}</code> &nbsp;|&nbsp; RSSI: ${s.rssi} dBm<br>
       Free heap: ${s.freeHeap} bytes &nbsp;|&nbsp; Uptime: ${Math.floor(s.uptimeMs/1000)}s`;
+    $('pgmStatus').textContent = !s.pgmEnabled
+      ? 'Programmer mode is off.'
+      : (s.pgmClientConnected ? 'Programmer mode: esptool connected — flashing in progress' : 'Programmer mode: waiting for esptool to connect…');
   } catch (e) { /* ignore transient errors */ }
 }
 setInterval(refreshStatus, 5000);
