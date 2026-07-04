@@ -78,10 +78,10 @@ const char INDEX_HTML[] PROGMEM = R"HTMLPAGE(
       <div id="monitor"></div>
       <div class="toolbar">
         <select id="lineEnding">
-          <option value="">No line ending</option>
-          <option value="\n" selected>LF (\n)</option>
-          <option value="\r\n">CRLF (\r\n)</option>
-          <option value="\r">CR (\r)</option>
+          <option value="none">No line ending</option>
+          <option value="lf" selected>LF (\n)</option>
+          <option value="crlf">CRLF (\r\n)</option>
+          <option value="cr">CR (\r)</option>
         </select>
         <select id="monitorBaud" title="Serial baud rate">
           <option>300</option><option>1200</option><option>2400</option><option>4800</option>
@@ -92,6 +92,7 @@ const char INDEX_HTML[] PROGMEM = R"HTMLPAGE(
         </select>
         <label class="check"><input type="checkbox" id="hexView"> Hex view</label>
         <label class="check"><input type="checkbox" id="autoscroll" checked> Autoscroll</label>
+        <label class="check"><input type="checkbox" id="timestamps"> Timestamps</label>
         <button class="btn secondary" id="clearBtn">Clear</button>
       </div>
       <div class="send-row">
@@ -391,19 +392,51 @@ async function refreshStatus() {
 setInterval(refreshStatus, 5000);
 
 // ---------- monitor + websocket ----------
+const LINE_ENDINGS = { none: '', lf: '\n', crlf: '\r\n', cr: '\r' };
 const monitorEl = $('monitor');
+
+// Tracks whether the next appended character starts a fresh line, so
+// timestamps (when enabled) are inserted once per line rather than once
+// per received chunk.
+let atLineStart = true;
+function timestampPrefix() {
+  const d = new Date();
+  const pad = (n, w = 2) => String(n).padStart(w, '0');
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)} -> `;
+}
+function splitKeepingNewlines(text) {
+  const parts = [];
+  let start = 0;
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === '\n') { parts.push(text.slice(start, i + 1)); start = i + 1; }
+  }
+  if (start < text.length) parts.push(text.slice(start));
+  return parts;
+}
 function appendMonitor(text, cls) {
+  if (!text) return;
   const atBottom = monitorEl.scrollTop + monitorEl.clientHeight >= monitorEl.scrollHeight - 4;
+  let out = text;
+  if ($('timestamps').checked) {
+    out = '';
+    for (const line of splitKeepingNewlines(text)) {
+      if (atLineStart) out += timestampPrefix();
+      out += line;
+      atLineStart = line.endsWith('\n');
+    }
+  } else {
+    atLineStart = text.endsWith('\n');
+  }
   const span = document.createElement('span');
   if (cls) span.style.color = cls;
-  span.textContent = text;
+  span.textContent = out;
   monitorEl.appendChild(span);
   if ($('autoscroll').checked && atBottom) monitorEl.scrollTop = monitorEl.scrollHeight;
 }
 function bytesToHex(bytes) {
   return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join(' ') + ' ';
 }
-$('clearBtn').addEventListener('click', () => monitorEl.textContent = '');
+$('clearBtn').addEventListener('click', () => { monitorEl.textContent = ''; atLineStart = true; });
 
 $('monitorBaud').addEventListener('change', async () => {
   const baudRate = Number($('monitorBaud').value);
@@ -453,14 +486,22 @@ async function connectWs() {
 }
 connectWs();
 
+// Must stay <= WS_RX_MAX_PAYLOAD in websocket_handler.h — the device decodes
+// each WS message into a fixed-size buffer of that capacity.
+const WS_SEND_CHUNK_BYTES = 512;
+
 function sendData() {
   const val = $('sendInput').value;
   if (!val && val !== '') return;
-  const ending = $('lineEnding').value;
+  const ending = LINE_ENDINGS[$('lineEnding').value] || '';
   const text = val + ending;
   if (!ws || ws.readyState !== WebSocket.OPEN) { toast('Not connected'); return; }
   const bytes = new TextEncoder().encode(text);
-  ws.send(JSON.stringify({ type: 'serial', data: bytesToB64(bytes) }));
+  // Long input is split across multiple WS messages so it can never
+  // silently exceed the device's per-message decode buffer.
+  for (let i = 0; i < bytes.length; i += WS_SEND_CHUNK_BYTES) {
+    ws.send(JSON.stringify({ type: 'serial', data: bytesToB64(bytes.subarray(i, i + WS_SEND_CHUNK_BYTES)) }));
+  }
   appendMonitor(text);
   $('sendInput').value = '';
 }

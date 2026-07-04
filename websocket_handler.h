@@ -11,6 +11,13 @@
 // grows unbounded and so espnowSend() can chunk cleanly under 250 bytes.
 #define BRIDGE_CHUNK_MAX   200
 
+// Incoming (browser -> device) messages are decoded into this buffer. Kept
+// independent of BRIDGE_CHUNK_MAX (which only governs outgoing UART->WS
+// framing) and sized generously since the browser can't know in advance how
+// long a pasted/typed message is; the client also chunks anything longer
+// than this so no input length silently fails.
+#define WS_RX_MAX_PAYLOAD  512
+
 #define MAX_WS_CLIENTS     4
 #define TOKEN_TTL_MS        60000UL   // a WS auth token is single-use, valid for 60s
 
@@ -141,7 +148,7 @@ inline void wsEvent(uint8_t num, WStype_t type, uint8_t *payload, size_t length)
       if (strcmp(msgType, "serial") == 0) {
         const char *b64 = doc["data"] | "";
         size_t b64Len = strlen(b64);
-        uint8_t raw[BRIDGE_CHUNK_MAX];
+        uint8_t raw[WS_RX_MAX_PAYLOAD];
         int n = base64Decode(b64, b64Len, raw, sizeof(raw));
         if (n > 0) handleBridgeDataFromWs(raw, (size_t)n);
       }
